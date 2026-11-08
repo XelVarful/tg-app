@@ -10,8 +10,10 @@ const validDate = value => typeof value==='string' && /^\d{4}-\d{2}-\d{2}$/.test
 const escapeHTML = value => String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const storageKey='band-ielts-v1';
 function normalize(data){return {...data,tasks:data.tasks.filter(t=>t&&typeof t.id==='string'&&typeof t.title==='string'&&Object.hasOwn(sections,t.section)&&validDate(t.date)).map(t=>({...t,done:!!t.done,note:typeof t.note==='string'?t.note:'',completedAt:validDate(t.completedAt)?t.completedAt:null}))};}
+const timer = globalThis.StudyTimer;
 let state={tasks:[]};
 try{const saved=JSON.parse(localStorage.getItem(storageKey));if(saved&&Array.isArray(saved.tasks))state=normalize(saved);}catch{}
+timer.normalize(state.tasks);
 let selectedDate=dateKey(),month=new Date().getMonth(),year=new Date().getFullYear(),page='tasks',sectionFilter='all',editingId=null,toastTimer;
 const tg=window.Telegram?.WebApp;
 function telegramCall(fn){try{fn();}catch{}}
@@ -27,8 +29,8 @@ $('#week').innerHTML=Array.from({length:7},(_,i)=>{const d=new Date(start);d.set
 $('#section-filters').innerHTML=[['all',{name:'Все'}],...Object.entries(sections)].map(([key,s])=>`<button data-section="${key}" class="${sectionFilter===key?'active':''}" aria-pressed="${sectionFilter===key}">${s.name}</button>`).join('');
 const tasks=state.tasks.filter(t=>t.date===selectedDate&&(sectionFilter==='all'||t.section===sectionFilter));const done=tasks.filter(t=>t.done).length;
 $('#day-count').textContent=`${done} из ${tasks.length}`;$('#day-progress').style.width=`${tasks.length?done/tasks.length*100:0}%`;
-$('#task-list').innerHTML=tasks.length?[...tasks].sort((a,b)=>Number(a.done)-Number(b.done)).map(t=>`<div class="task ${t.done?'done':''}"><button class="check" data-toggle="${escapeHTML(t.id)}" aria-label="${t.done?'Вернуть в план':'Выполнить'}: ${escapeHTML(t.title)}" aria-pressed="${t.done}"><span>${t.done?'✓':''}</span></button><button class="task-content" data-edit="${escapeHTML(t.id)}" aria-label="Редактировать: ${escapeHTML(t.title)}"><span class="task-title">${escapeHTML(t.title)}</span><span class="task-meta"><i class="section-dot" style="--section-color:${sections[t.section].color}"></i>${sections[t.section].name}</span>${t.note?`<span class="task-note">${escapeHTML(t.note)}</span>`:''}</button></div>`).join(''):`<div class="empty"><div class="empty-symbol">${icon('tasks')}</div><h3>Пока нет задач</h3><p>${sectionFilter==='all'?'Добавь первую задачу на этот день.':`Добавь задачу по ${sections[sectionFilter].name}.`}</p></div>`;
-renderCalendar();renderProgress();
+$('#task-list').innerHTML=tasks.length?[...tasks].sort((a,b)=>Number(a.done)-Number(b.done)).map(t=>`<div class="task ${t.done?'done':''}"><button class="check" data-toggle="${escapeHTML(t.id)}" aria-label="${t.done?'Вернуть в план':'Выполнить'}: ${escapeHTML(t.title)}" aria-pressed="${t.done}"><span>${t.done?'✓':''}</span></button><div class="task-body"><button class="task-content" data-edit="${escapeHTML(t.id)}" aria-label="Редактировать: ${escapeHTML(t.title)}"><span class="task-title">${escapeHTML(t.title)}</span><span class="task-meta"><i class="section-dot" style="--section-color:${sections[t.section].color}"></i>${sections[t.section].name}</span>${t.note?`<span class="task-note">${escapeHTML(t.note)}</span>`:''}</button>${taskTimerMarkup(t)}</div></div>`).join(''):`<div class="empty"><div class="empty-symbol">${icon('tasks')}</div><h3>Пока нет задач</h3><p>${sectionFilter==='all'?'Добавь первую задачу на этот день.':`Добавь задачу по ${sections[sectionFilter].name}.`}</p></div>`;
+renderCalendar();renderProgress();renderRunningTimer();refreshTimerDisplays();
 }
 function renderCalendar(){
 const first=new Date(year,month,1),days=new Date(year,month+1,0).getDate(),offset=(first.getDay()+6)%7;
@@ -40,7 +42,7 @@ $('#activity-date').textContent=fromKey(selectedDate).toLocaleDateString('ru-RU'
 $('#activity-count').textContent=`Выполнено: ${completedOn(selectedDate)}`;
 }
 function renderProgress(){const completed=state.tasks.filter(t=>t.done);$('#total-done').textContent=completed.length;$('#active-days').textContent=new Set(completed.map(t=>t.completedAt).filter(Boolean)).size;$('#streak').textContent=getStreak();
-$('#section-progress').innerHTML=Object.entries(sections).map(([key,s])=>{const all=state.tasks.filter(t=>t.section===key),done=all.filter(t=>t.done).length;return `<div class="section-progress-row" style="--section-color:${s.color}"><div class="section-progress-top"><strong><i class="section-dot"></i>${s.name}</strong><span>${done} / ${all.length}</span></div><div class="progress-track"><div style="width:${all.length?done/all.length*100:0}%"></div></div></div>`;}).join('');
+$('#section-progress').innerHTML=Object.entries(sections).map(([key,s])=>{const all=state.tasks.filter(t=>t.section===key),done=all.filter(t=>t.done).length;return `<div class="section-progress-row" style="--section-color:${s.color}"><div class="section-progress-top"><strong><i class="section-dot"></i>${s.name}</strong><span>${done} / ${all.length} · <span data-section-time="${key}"></span></span></div><div class="progress-track"><div style="width:${all.length?done/all.length*100:0}%"></div></div></div>`;}).join('');
 const days=Array.from({length:7},(_,i)=>{const d=new Date();d.setDate(d.getDate()-6+i);return {d,n:completedOn(dateKey(d))};}),max=Math.max(1,...days.map(d=>d.n));
 $('#weekly-total').textContent=`Выполнено: ${days.reduce((sum,d)=>sum+d.n,0)}`;
 $('#activity-chart').innerHTML=days.map(({d,n},i)=>`<div class="chart-day ${i===6?'today':''}" aria-label="${d.toLocaleDateString('ru-RU')}: ${n} выполнено"><strong>${n}</strong><div class="chart-bar" style="height:${Math.max(3,n/max*100)}px"></div><small>${d.toLocaleDateString('ru-RU',{weekday:'short'})}</small></div>`).join('');
@@ -52,10 +54,11 @@ function closeTask(){$('#task-dialog').close();}
 $('#add-task').onclick=()=>openTask();$('#close-dialog').onclick=closeTask;$('#task-dialog').addEventListener('close',updateBackButton);
 $('#today-button').onclick=()=>selectDate(dateKey());$('#open-calendar').onclick=()=>showPage('calendar');
 $('#task-form').elements.title.oninput=e=>e.target.setCustomValidity('');
-$('#task-form').onsubmit=e=>{e.preventDefault();const f=e.target,title=f.elements.title.value.trim();if(!title){f.elements.title.setCustomValidity('Напиши название задачи');f.elements.title.reportValidity();return;}const data={title,section:f.elements.section.value,date:f.elements.date.value,note:f.elements.note.value.trim()};if(!validDate(data.date)||!Object.hasOwn(sections,data.section))return;const old=state.tasks.find(t=>t.id===editingId);if(editingId&&!old){closeTask();toast('Эта задача уже удалена');return;}if(old)Object.assign(old,data);else state.tasks.push({id:globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random()}`,...data,done:false,completedAt:null});const saved=save();sectionFilter='all';selectDate(data.date);closeTask();if(saved)toast(old?'Сохранено':'Задача добавлена');};
+$('#task-form').onsubmit=e=>{e.preventDefault();const f=e.target,title=f.elements.title.value.trim();if(!title){f.elements.title.setCustomValidity('Напиши название задачи');f.elements.title.reportValidity();return;}const data={title,section:f.elements.section.value,date:f.elements.date.value,note:f.elements.note.value.trim()};if(!validDate(data.date)||!Object.hasOwn(sections,data.section))return;const old=state.tasks.find(t=>t.id===editingId);if(editingId&&!old){closeTask();toast('Эта задача уже удалена');return;}if(old)Object.assign(old,data);else state.tasks.push({id:globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random()}`,...data,done:false,completedAt:null,elapsedMs:0,timerStartedAt:null});const saved=save();sectionFilter='all';selectDate(data.date);closeTask();if(saved)toast(old?'Сохранено':'Задача добавлена');};
 $('#delete-task').onclick=()=>{const task=state.tasks.find(t=>t.id===editingId);if(!task)return;const remove=()=>{state.tasks=state.tasks.filter(t=>t.id!==task.id);const saved=save();closeTask();render();if(saved)toast('Задача удалена');};if(tg?.isVersionAtLeast?.('6.2')&&tg.initData){tg.showConfirm('Удалить задачу?',ok=>{if(ok)remove();});}else if(confirm('Удалить задачу?'))remove();};
 document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;const d=b.dataset;
-if(d.toggle){const t=state.tasks.find(t=>t.id===d.toggle);if(t){t.done=!t.done;t.completedAt=t.done?dateKey():null;save();render();telegramCall(()=>tg?.HapticFeedback?.impactOccurred('light'));}}
+if(d.toggle){const t=state.tasks.find(t=>t.id===d.toggle);if(t){if(!t.done)timer.pause(t);t.done=!t.done;t.completedAt=t.done?dateKey():null;save();render();telegramCall(()=>tg?.HapticFeedback?.impactOccurred('light'));}}
+if(d.timer){if(timer.toggle(state.tasks,d.timer)){save();render();}}
 if(d.edit)openTask(d.edit);
 if(d.section){sectionFilter=d.section;render();}
 if(d.date)selectDate(d.date);
@@ -67,6 +70,27 @@ $('#task-dialog').addEventListener('click',e=>{if(e.target!==$('#task-dialog'))r
 telegramCall(()=>{tg?.ready();tg?.expand();});
 telegramCall(()=>{if(tg?.isVersionAtLeast('6.1')){tg.setHeaderColor('#0c0c0e');tg.setBackgroundColor('#0c0c0e');tg.BackButton.onClick(()=>{if($('#task-dialog').open)closeTask();else showPage('tasks');});}});
 telegramCall(()=>{if(tg?.isVersionAtLeast('7.10'))tg.setBottomBarColor('#0c0c0e');});
-window.addEventListener('storage',e=>{if(e.key===storageKey){try{const next=JSON.parse(e.newValue);if(next&&Array.isArray(next.tasks)){state=normalize(next);render();}else if(e.newValue===null){state={tasks:[]};render();}}catch{}}});
+window.addEventListener('storage',e=>{if(e.key===storageKey){try{const next=JSON.parse(e.newValue);if(next&&Array.isArray(next.tasks)){state=normalize(next);timer.normalize(state.tasks);render();}else if(e.newValue===null){state={tasks:[]};render();}}catch{}}});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)render();});
+window.addEventListener('pageshow',()=>render());
 render();
+
+function taskTimerMarkup(task){
+  const active=!!task.timerStartedAt;
+  return `<div class="task-timer-row">${task.done?'':`<button class="task-timer ${active?'is-running':''}" data-timer="${escapeHTML(task.id)}" aria-label="${active?'Пауза':'Запустить таймер'}: ${escapeHTML(task.title)}" aria-pressed="${active}"><span aria-hidden="true">${active?'Ⅱ':'▷'}</span><span>${active?'Пауза':timer.elapsed(task)>0?'Продолжить':'Начать'}</span></button>`}<span class="task-time ${active?'is-running':''}" data-task-time="${escapeHTML(task.id)}"></span></div>`;
+}
+function renderRunningTimer(){
+  const active=state.tasks.find(t=>t.timerStartedAt);
+  $('#running-timer').hidden=!active;
+  if(active)$('#running-title').textContent=active.title;
+}
+function refreshTimerDisplays(){
+  const now=Date.now(),active=state.tasks.find(t=>t.timerStartedAt);
+  document.querySelectorAll('[data-task-time]').forEach(el=>{const task=state.tasks.find(t=>t.id===el.dataset.taskTime);if(task)el.textContent=task.timerStartedAt?timer.clock(timer.elapsed(task,now)):timer.duration(timer.elapsed(task,now));});
+  if(active)$('#running-time').textContent=timer.clock(timer.elapsed(active,now));
+  $('#total-study-time').textContent=timer.duration(state.tasks.reduce((sum,t)=>sum+timer.elapsed(t,now),0));
+  document.querySelectorAll('[data-section-time]').forEach(el=>{el.textContent=timer.duration(state.tasks.filter(t=>t.section===el.dataset.sectionTime).reduce((sum,t)=>sum+timer.elapsed(t,now),0));});
+}
+$('#pause-running').onclick=()=>{const active=state.tasks.find(t=>t.timerStartedAt);if(active){timer.pause(active);save();render();}};
+$('#running-task').onclick=()=>{const active=state.tasks.find(t=>t.timerStartedAt);if(active){sectionFilter='all';selectDate(active.date);showPage('tasks');}};
+setInterval(()=>{if(!document.hidden)refreshTimerDisplays();},1000);
